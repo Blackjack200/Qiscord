@@ -24,6 +24,14 @@ import (
 	"sync"
 )
 
+type Data struct {
+	Log        *logrus.Logger
+	Discord    *discordgo.Session
+	QQ         *bot.Bot
+	History    storage.MessageHistory
+	ChannelMap map[int64]*discordgo.Channel
+}
+
 func main() {
 	log := logrus.New()
 	log.SetFormatter(&logrus.TextFormatter{ForceColors: true})
@@ -34,38 +42,22 @@ func main() {
 		log.Panic(v)
 	})
 
-	cfg, err := readConfig()
-	if err != nil {
-		log.Fatalf("error read config: %v", err)
-	}
+	d, b, h, saveFunc := start(log)
 
-	d, err := discordLogin(cfg)
-	if err != nil {
-		log.Fatalf("failed login discord: %v", err)
-	}
-
-	b, err := qqLogin(log, cfg)
-	if err != nil {
-		log.Fatalf("failed login QQ: %v", err)
-	}
-
-	h, saveFunc, err := messageHistory(log)
-	if err != nil {
-		log.Fatalf("failed load message history: %v", err)
-	}
-
-	b.RefreshList()
 	started := false
 	log.Infof("Started")
 
 	d.AddHandler(func(s *discordgo.Session, discordMsg *discordgo.MessageCreate) {
+		channelID := discordMsg.ChannelID
+		guildID := discordMsg.GuildID
+
 		if strings.EqualFold(discordMsg.Content, "clear") && !started {
-			mainProgressFunc, err := d.ChannelMessageSend(discordMsg.ChannelID, "cleaning")
+			mainProgressFunc, err := d.ChannelMessageSend(channelID, "cleaning")
 			util.Optional(err)
 
-			cleanChannels(s, discordMsg)
+			cleanChannels(s, guildID)
 
-			_, err = d.ChannelMessageEdit(discordMsg.ChannelID, mainProgressFunc.ID, "cleaned")
+			_, err = d.ChannelMessageEdit(channelID, mainProgressFunc.ID, "cleaned")
 			util.Optional(err)
 			return
 		}
@@ -73,7 +65,7 @@ func main() {
 		if strings.EqualFold(discordMsg.Content, "ping") && !started {
 			log.Info("Enabled")
 
-			channelMap, channelIdToGroup, registerChannel, err := initTransport(d, b, discordMsg.GuildID)
+			channelMap, channelIdToGroup, registerChannel, err := initTransport(d, b, guildID)
 			d := &Data{
 				Log:        log,
 				Discord:    d,
@@ -90,64 +82,13 @@ func main() {
 			log.Printf("%v transport inited", len(channelMap))
 
 			log.Printf("syncing history messages")
-			syncHistoryMessage(d, discordMsg.ChannelID)
+			syncHistoryMessage(d, channelID)
 			log.Printf("synced history messages")
 
-			d.Discord.AddHandler(func(s *discordgo.Session, deletedMsg *discordgo.MessageDelete) {
-				groupCode, ok := channelIdToGroup[deletedMsg.ChannelID]
-				if ok {
-					qqMsgId, ok := d.History.ToQQ(deletedMsg.GuildID, deletedMsg.ChannelID, deletedMsg.ID)
-					if ok {
-						msg, _ := d.QQ.GetGroupMessages(groupCode, int64(qqMsgId), int64(qqMsgId))
-						if len(msg) > 0 {
-							util.Must(d.QQ.RecallGroupMessage(groupCode, msg[0].Id, msg[0].InternalId))
-						}
-					}
-				}
-			})
-			d.Discord.AddHandler(func(s *discordgo.Session, discordMsg *discordgo.MessageCreate) {
-				if discordMsg.Author.ID == s.State.User.ID {
-					return
-				}
-				groupCode, ok := channelIdToGroup[discordMsg.ChannelID]
-				group := d.QQ.FindGroup(groupCode)
-				if ok {
-					HandleDiscordMessage(d, group, discordMsg)
-				}
-			})
-			d.QQ.GroupMessageRecalledEvent.Subscribe(func(_ *client.QQClient, e *client.GroupMessageRecalledEvent) {
-				channel, ok := channelMap[e.GroupCode]
-				if ok {
-					discordMsgId, ok := d.History.ToDiscord(channel.GuildID, channel.ID, e.MessageId)
-					if ok {
-						info := util.MustNotNil[*client.GroupInfo](d.QQ.FindGroup(e.GroupCode))
-						operator := info.FindMemberWithoutLock(e.OperatorUin)
-						author := info.FindMemberWithoutLock(e.AuthorUin)
-						util.MustBool(operator != nil, author != nil)
-						util.Optional(d.Discord.ChannelMessageEdit(
-							channel.ID, discordMsgId,
-							fmt.Sprintf(
-								"%v Recalled %v's message",
-								operator.DisplayName(), author.DisplayName(),
-							),
-						))
-					}
-				}
-			})
-			d.QQ.GroupMessageEvent.Subscribe(func(_ *client.QQClient, qqMsg *message.GroupMessage) {
-				err = registerChannel(qqMsg.GroupCode, qqMsg.GroupName)
-				if err != nil {
-					log.Errorf("error register channel %v %v: %v", qqMsg.GroupCode, qqMsg.GroupName, err)
-					return
-				}
-				c, ok := channelMap[qqMsg.GroupCode]
-				if ok {
-					HandleQQMessage(d, c, qqMsg)
-				}
-			})
-
+			Enable(d, channelIdToGroup, channelMap, registerChannel)
+			util.Optional(d.Discord.ChannelMessageSend(channelID, "pong"))
 			started = true
-			util.Optional(d.Discord.ChannelMessageSend(discordMsg.ChannelID, "pong"))
+
 		}
 	})
 
@@ -156,8 +97,87 @@ func main() {
 	b.Release()
 }
 
-func cleanChannels(s *discordgo.Session, m *discordgo.MessageCreate) {
-	c, _ := s.GuildChannels(m.GuildID)
+func start(log *logrus.Logger) (*discordgo.Session, *bot.Bot, storage.MessageHistory, func()) {
+	cfg, err := readConfig()
+	if err != nil {
+		log.Fatalf("error read config: %v", err)
+	}
+
+	d, err := discordLogin(cfg)
+	if err != nil {
+		log.Fatalf("failed start discord: %v", err)
+	}
+
+	b, err := qqLogin(log, cfg)
+	if err != nil {
+		log.Fatalf("failed start QQ: %v", err)
+	}
+
+	h, saveFunc, err := messageHistory(log)
+	if err != nil {
+		log.Fatalf("failed load message history: %v", err)
+	}
+
+	b.RefreshList()
+	return d, b, h, saveFunc
+}
+
+func Enable(d *Data, channelIdToGroup map[string]int64, channelMap map[int64]*discordgo.Channel, registerChannel func(groupCode int64, groupName string) error) {
+	d.Discord.AddHandler(func(s *discordgo.Session, deletedMsg *discordgo.MessageDelete) {
+		groupCode, ok := channelIdToGroup[deletedMsg.ChannelID]
+		if ok {
+			qqMsgId, ok := d.History.ToQQ(deletedMsg.GuildID, deletedMsg.ChannelID, deletedMsg.ID)
+			if ok {
+				msg, _ := d.QQ.GetGroupMessages(groupCode, int64(qqMsgId), int64(qqMsgId))
+				if len(msg) > 0 {
+					util.Must(d.QQ.RecallGroupMessage(groupCode, msg[0].Id, msg[0].InternalId))
+				}
+			}
+		}
+	})
+	d.Discord.AddHandler(func(s *discordgo.Session, discordMsg *discordgo.MessageCreate) {
+		if discordMsg.Author.ID == s.State.User.ID {
+			return
+		}
+		groupCode, ok := channelIdToGroup[discordMsg.ChannelID]
+		group := d.QQ.FindGroup(groupCode)
+		if ok {
+			HandleDiscordMessage(d, group, discordMsg)
+		}
+	})
+	d.QQ.GroupMessageRecalledEvent.Subscribe(func(_ *client.QQClient, e *client.GroupMessageRecalledEvent) {
+		channel, ok := channelMap[e.GroupCode]
+		if ok {
+			discordMsgId, ok := d.History.ToDiscord(channel.GuildID, channel.ID, e.MessageId)
+			if ok {
+				info := util.MustNotNil[*client.GroupInfo](d.QQ.FindGroup(e.GroupCode))
+				operator := info.FindMemberWithoutLock(e.OperatorUin)
+				author := info.FindMemberWithoutLock(e.AuthorUin)
+				util.MustBool(operator != nil, author != nil)
+				util.Optional(d.Discord.ChannelMessageEdit(
+					channel.ID, discordMsgId,
+					fmt.Sprintf(
+						"%v Recalled %v's message",
+						operator.DisplayName(), author.DisplayName(),
+					),
+				))
+			}
+		}
+	})
+	d.QQ.GroupMessageEvent.Subscribe(func(_ *client.QQClient, qqMsg *message.GroupMessage) {
+		util.Must(registerChannel(qqMsg.GroupCode, qqMsg.GroupName))
+		c, ok := channelMap[qqMsg.GroupCode]
+		if ok {
+			HandleQQMessage(d, c, qqMsg)
+		}
+	})
+	d.QQ.GroupJoinEvent.Subscribe(func(_ *client.QQClient, group *client.GroupInfo) {
+		util.Must(registerChannel(group.Code, group.Name))
+	})
+}
+
+func cleanChannels(s *discordgo.Session, guildId string) {
+	c, _ := s.GuildChannels(guildId)
 	for _, cc := range c {
 		if len(strings.Split(cc.Name, "_")) >= 2 {
 			_, _ = s.ChannelDelete(cc.ID)
@@ -178,14 +198,6 @@ func dumpTransports(d *Data, channelId string) {
 		}
 	}
 	util.Optional(d.Discord.ChannelMessageSend(channelId, buf))
-}
-
-type Data struct {
-	Log        *logrus.Logger
-	Discord    *discordgo.Session
-	QQ         *bot.Bot
-	History    storage.MessageHistory
-	ChannelMap map[int64]*discordgo.Channel
 }
 
 func syncHistoryMessage(d *Data, channelId string) {
@@ -438,7 +450,7 @@ func wait() {
 type Config struct {
 	DiscordToken string `json:"discord-token"`
 	Account      int64  `json:"account"`
-	Method       string `json:"login-method"`
+	Method       string `json:"start-method"`
 	Password     string `json:"password"`
 }
 
