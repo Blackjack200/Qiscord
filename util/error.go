@@ -110,3 +110,21 @@ func MustAnyByteSlice(args ...interface{}) []byte {
 		return true
 	}, args...)
 }
+
+// AnyError messy ...
+func AnyError(args ...interface{}) error {
+	var lastError error
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		if err, ok := arg.(error); ok && err != nil {
+			if lastError != nil {
+				lastError = errors.WithMessage(err, "")
+			} else {
+				lastError = err
+			}
+		}
+	}
+	return lastError
+}
