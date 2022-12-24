@@ -28,8 +28,8 @@ type Service struct {
 	registerFunc      func(groupCode int64, groupName string) error
 }
 
-func NewService(log *logrus.Logger, cfg *Config) (*Service, error) {
-	discord, qq, history, saveHistoryFunc, err := login(log, cfg)
+func NewService(log *logrus.Logger, data *ServiceData) (*Service, error) {
+	discord, qq, history, saveHistoryFunc, err := login(log, data)
 	if err != nil {
 		return nil, err
 	}
@@ -42,13 +42,13 @@ func NewService(log *logrus.Logger, cfg *Config) (*Service, error) {
 	}, nil
 }
 
-func login(log *logrus.Logger, cfg *Config) (*discordgo.Session, *bot.Bot, storage.MessageHistory, func() error, error) {
-	d, err := discordLogin(cfg)
+func login(log *logrus.Logger, data *ServiceData) (*discordgo.Session, *bot.Bot, storage.MessageHistory, func() error, error) {
+	d, err := discordLogin(data)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed login discord: %v", err)
 	}
 
-	b, err := qqLogin(log, cfg)
+	b, err := qqLogin(log, data)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed login qq: %v", err)
 	}
