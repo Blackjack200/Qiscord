@@ -151,7 +151,7 @@ func (s *Service) syncHistoryMessage() {
 					s.log.Infof(" - Syncing %v", groupInfo.Name)
 
 					for i, msg := range msgs {
-						s.handleQQMessage(channel, msg)
+						s.handleQQMessage(channel, msg, true)
 						s.log.Infof(" - Syncing %v (%v/%v)", groupInfo.Name, i+1, len(msgs))
 					}
 				}

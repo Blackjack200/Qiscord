@@ -3,15 +3,22 @@ package storage
 import (
 	"encoding/json"
 	"io"
+	"sync"
 )
 
 type messageHistoryEntry struct {
+	mu          *sync.Mutex `json:"-"`
 	QQToDiscord map[int32]string
 	DiscordToQQ map[string]int32
 	LastId      int64
 }
 
 func (h *messageHistoryEntry) Insert(discordMsgId string, qqMsgId int32) {
+	if h.mu == nil {
+		h.mu = &sync.Mutex{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.DiscordToQQ[discordMsgId] = qqMsgId
 	h.QQToDiscord[qqMsgId] = discordMsgId
 	if h.LastId < int64(qqMsgId) {
@@ -32,6 +39,8 @@ func (h *messageHistoryEntry) ToDiscord(id int32) (string, bool) {
 func NewMessageHistory() MessageHistory {
 	return make(MessageHistory)
 }
+
+var mu = &sync.Mutex{}
 
 type MessageHistory map[string]map[string]*messageHistoryEntry
 
@@ -69,6 +78,8 @@ func (s MessageHistory) ToDiscord(guildId, channelId string, msgId int32) (strin
 }
 
 func (s MessageHistory) lazy(guildId string, channelId string) {
+	mu.Lock()
+	defer mu.Unlock()
 	if _, ok := s[guildId]; !ok {
 		s[guildId] = make(map[string]*messageHistoryEntry)
 	}

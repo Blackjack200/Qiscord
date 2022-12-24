@@ -25,7 +25,7 @@ func (s *Service) startMessageHandler() {
 	s.qq.GroupMessageEvent.Subscribe(func(_ *client.QQClient, qqMsg *message.GroupMessage) {
 		util.Must(s.registerFunc(qqMsg.GroupCode, qqMsg.GroupName))
 		if channel, ok := s.groupToChannel(qqMsg.GroupCode); ok {
-			s.handleQQMessage(channel, qqMsg)
+			s.handleQQMessage(channel, qqMsg, true)
 		}
 	})
 	s.qq.GroupJoinEvent.Subscribe(func(_ *client.QQClient, group *client.GroupInfo) {

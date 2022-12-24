@@ -80,22 +80,49 @@ func (s *Service) HandleDiscordMessage(group *client.GroupInfo, discordMsg *disc
 	s.history.Insert(discordMsg.GuildID, discordMsg.ChannelID, discordMsg.ID, grpMsg.Id)
 }
 
-func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessage) {
+func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessage, history bool) {
 	defer translateMessagePanicHandler(s, "qq")
 	m := &discordgo.MessageSend{}
 	isReply := false
 	for _, e := range msg.Elements {
 		switch i := e.(type) {
 		case *message.ReplyElement:
-			isReply = true
-			d, ok := s.history.ToDiscord(c.GuildID, c.ID, i.ReplySeq)
-			if ok {
-				m.Reference = &discordgo.MessageReference{
-					MessageID: d,
-					ChannelID: c.ID,
-					GuildID:   c.GuildID,
-				}
+			if i.GroupID == 0 {
+				i.GroupID = msg.GroupCode
 			}
+			isReply = true
+			cc, have := s.groupToChannel(i.GroupID)
+			if have {
+				referencedMsgId, ok := s.history.ToDiscord(cc.GuildID, cc.ID, i.ReplySeq)
+				if ok {
+					if cc.ID != c.ID {
+						m.Components = []discordgo.MessageComponent{discordgo.ActionsRow{
+							Components: []discordgo.MessageComponent{
+								discordgo.Button{
+									Label: "Referenced Message",
+									Style: discordgo.LinkButton,
+									URL:   fmt.Sprintf("https://discord.com/channels/%v/%v/%v", cc.GuildID, cc.ID, referencedMsgId),
+								}},
+						}}
+						goto print
+					} else {
+						m.Reference = &discordgo.MessageReference{
+							MessageID: referencedMsgId,
+							ChannelID: cc.ID,
+							GuildID:   cc.GuildID,
+						}
+					}
+				} else {
+					goto print
+				}
+			} else {
+				goto print
+			}
+			goto done
+		print:
+			m.Content = fmt.Sprintf("[Reply] %v\n", strings.TrimSpace(s.elemToString(i.Elements, i.GroupID, false))) + m.Content
+		done:
+			continue
 		case *message.GroupImageElement:
 			url := i.Url
 			m.Embeds = append(m.Embeds, &discordgo.MessageEmbed{
@@ -108,14 +135,31 @@ func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessag
 			})
 		}
 	}
-	m.Content = fmt.Sprintf("%v(%v): %v", msg.Sender.DisplayName(), msg.Sender.Uin, s.QQMsgToString(msg, isReply))
+	m.Content += fmt.Sprintf("%v(%v): %v", msg.Sender.DisplayName(), msg.Sender.Uin, s.QQMsgToString(msg, isReply))
 
 	discordMsg := util.MustNotNil[*discordgo.Message](s.discord.ChannelMessageSendComplex(c.ID, m))
-	s.history.Insert(c.GuildID, c.ID, discordMsg.ID, msg.Id)
+	if history {
+		s.history.Insert(c.GuildID, c.ID, discordMsg.ID, msg.Id)
+	}
 
 	// slow download speed, so do this in other goroutine
 	for _, e := range msg.Elements {
 		switch i := e.(type) {
+		case *message.ForwardElement:
+			f := s.qq.GetForwardMessage(i.ResId)
+			for _, n := range f.Nodes {
+				grpMsgT := &message.GroupMessage{
+					GroupCode: n.GroupId,
+					Sender: &message.Sender{
+						Uin:      n.SenderId,
+						Nickname: "[forward] " + n.SenderName,
+						IsFriend: s.qq.FindFriend(n.SenderId) != nil,
+					},
+					Time:     n.Time,
+					Elements: n.Message,
+				}
+				s.handleQQMessage(c, grpMsgT, false)
+			}
 		case *message.ShortVideoElement:
 			go func() {
 				defer func() {
@@ -139,8 +183,14 @@ func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessag
 	}
 }
 
-func (s *Service) QQMsgToString(msg *message.GroupMessage, isReply bool) (res string) {
-	for _, elem := range msg.Elements {
+func (s *Service) QQMsgToString(msg *message.GroupMessage, isReply bool) string {
+	elems := msg.Elements
+	groupCode := msg.GroupCode
+	return s.elemToString(elems, groupCode, isReply)
+}
+
+func (s *Service) elemToString(elems []message.IMessageElement, groupCode int64, isReply bool) (res string) {
+	for _, elem := range elems {
 		switch e := elem.(type) {
 		case *message.TextElement:
 			res += e.Content
@@ -151,17 +201,19 @@ func (s *Service) QQMsgToString(msg *message.GroupMessage, isReply bool) (res st
 		case *message.AtElement:
 			if e.Target == s.qq.Uin {
 				if !isReply {
-					res += "@here"
+					res += "@here" + e.Display
 				}
 			} else {
 				res += e.Display
 			}
+		case *message.ForwardElement:
+			res += fmt.Sprintf("[Forward: %v]", e.FileName)
 		case *message.RedBagElement:
 			res += fmt.Sprintf("[RedBag: %v]", e.Title)
 		case *message.ShortVideoElement:
 			res += fmt.Sprintf("[Video: %v]", filepath.Base(e.Name))
 		case *message.GroupFileElement:
-			res += fmt.Sprintf("[File: %v: %v]", e.Name, s.qq.GetGroupFileUrl(msg.GroupCode, e.Path, e.Busid))
+			res += fmt.Sprintf("[File: %v: %v]", e.Name, s.qq.GetGroupFileUrl(groupCode, e.Path, e.Busid))
 		}
 	}
 	return
