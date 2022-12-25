@@ -43,7 +43,7 @@ func (s *Service) startRecallHandler() {
 		}
 	}
 	s.discord.AddHandler(func(_ *discordgo.Session, deletedMsg *discordgo.MessageDelete) {
-		defer recallPanicRecover("discord")
+		defer recallPanicRecover("discord")()
 		group, ok := s.channelToGroup(deletedMsg.ChannelID)
 		if ok {
 			qqMsgId, ok := s.history.ToQQ(deletedMsg.GuildID, deletedMsg.ChannelID, deletedMsg.ID)
@@ -56,7 +56,7 @@ func (s *Service) startRecallHandler() {
 		}
 	})
 	s.qq.GroupMessageRecalledEvent.Subscribe(func(_ *client.QQClient, e *client.GroupMessageRecalledEvent) {
-		defer recallPanicRecover("qq")
+		defer recallPanicRecover("qq")()
 		channel, ok := s.groupToChannel(e.GroupCode)
 		if ok {
 			discordMsgId, ok := s.history.ToDiscord(channel.GuildID, channel.ID, e.MessageId)

@@ -34,8 +34,8 @@ func run(w *app.Window) error {
 	flex.Axis = layout.Vertical
 	flex.Spacing = layout.SpaceAround
 
-	l := &widget.Editor{}
-	lw := material.Editor(th, l, "ff")
+	l := &widget.Editor{SingleLine: true}
+	lw := material.Editor(th, l, "Guild Id")
 
 	b := &widget.Clickable{}
 	bw := material.Button(th, b, "Start")

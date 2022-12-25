@@ -12,17 +12,15 @@ import (
 	"strings"
 )
 
-var translateMessagePanicHandler = func(s *Service, f string) func() {
-	return func() {
+func (s *Service) HandleDiscordMessage(group *client.GroupInfo, discordMsg *discordgo.MessageCreate) {
+	defer func() {
 		panicThing := recover()
 		if panicThing != nil {
-			s.log.Errorf("panic: translate %v msg: %v", s, panicThing)
+			s.log.Errorf("panic: translate discord msg: %v", panicThing)
+			// another panic possibility lol
+			util.Must(s.discord.ChannelMessageSend(discordMsg.ChannelID, fmt.Sprintf("panic: translate %v msg: %v", s, panicThing)))
 		}
-	}
-}
-
-func (s *Service) HandleDiscordMessage(group *client.GroupInfo, discordMsg *discordgo.MessageCreate) {
-	defer translateMessagePanicHandler(s, "discord")
+	}()
 	discordMsgFormatted := discordMsg.ContentWithMentionsReplaced()
 	translated := message.NewSendingMessage()
 
@@ -81,36 +79,47 @@ func (s *Service) HandleDiscordMessage(group *client.GroupInfo, discordMsg *disc
 }
 
 func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessage, history bool) {
-	defer translateMessagePanicHandler(s, "qq")
+	defer func() {
+		panicThing := recover()
+		if panicThing != nil {
+			s.log.Errorf("panic: translate qq msg: %v", panicThing)
+			// another panic possibility lol
+			util.Must(s.qq.SendGroupMessage(msg.GroupCode,
+				message.NewSendingMessage().Append(message.NewText(
+					fmt.Sprintf("panic: translate %v msg: %v", s, panicThing),
+				))),
+			)
+		}
+	}()
 	m := &discordgo.MessageSend{}
 	isReply := false
 	for _, e := range msg.Elements {
 		switch i := e.(type) {
+		//TODO Handle voice data
 		case *message.ReplyElement:
 			if i.GroupID == 0 {
 				i.GroupID = msg.GroupCode
 			}
 			isReply = true
-			cc, have := s.groupToChannel(i.GroupID)
-			if have {
-				referencedMsgId, ok := s.history.ToDiscord(cc.GuildID, cc.ID, i.ReplySeq)
-				if ok {
-					if cc.ID != c.ID {
+			if replyMsgChannel, have := s.groupToChannel(i.GroupID); have {
+				if referencedMsgId, ok := s.history.ToDiscord(replyMsgChannel.GuildID, replyMsgChannel.ID, i.ReplySeq); ok {
+					if replyMsgChannel.ID != c.ID {
 						m.Components = []discordgo.MessageComponent{discordgo.ActionsRow{
 							Components: []discordgo.MessageComponent{
 								discordgo.Button{
 									Label: "Referenced Message",
 									Style: discordgo.LinkButton,
-									URL:   fmt.Sprintf("https://discord.com/channels/%v/%v/%v", cc.GuildID, cc.ID, referencedMsgId),
+									URL:   fmt.Sprintf("https://discord.com/channels/%v/%v/%v", replyMsgChannel.GuildID, replyMsgChannel.ID, referencedMsgId),
 								}},
 						}}
 						goto print
 					} else {
 						m.Reference = &discordgo.MessageReference{
 							MessageID: referencedMsgId,
-							ChannelID: cc.ID,
-							GuildID:   cc.GuildID,
+							ChannelID: replyMsgChannel.ID,
+							GuildID:   replyMsgChannel.GuildID,
 						}
+						goto done
 					}
 				} else {
 					goto print
@@ -118,11 +127,22 @@ func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessag
 			} else {
 				goto print
 			}
-			goto done
 		print:
 			m.Content = fmt.Sprintf("[Reply] %v\n", strings.TrimSpace(s.elemToString(i.Elements, i.GroupID, false))) + m.Content
 		done:
 			continue
+		case *message.FriendImageElement:
+			println(i.Url)
+			elem, err := s.qq.QueryFriendImage(msg.Sender.Uin, i.Md5, i.Size)
+			util.Must(err)
+			url := elem.Url
+			println(elem.Url)
+			m.Embeds = append(m.Embeds, &discordgo.MessageEmbed{
+				Image: &discordgo.MessageEmbedImage{
+					URL:      url,
+					ProxyURL: url,
+				},
+			})
 		case *message.GroupImageElement:
 			url := i.Url
 			m.Embeds = append(m.Embeds, &discordgo.MessageEmbed{
@@ -147,19 +167,9 @@ func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessag
 		switch i := e.(type) {
 		case *message.ForwardElement:
 			f := s.qq.GetForwardMessage(i.ResId)
-			for _, n := range f.Nodes {
-				grpMsgT := &message.GroupMessage{
-					GroupCode: n.GroupId,
-					Sender: &message.Sender{
-						Uin:      n.SenderId,
-						Nickname: "[forward] " + n.SenderName,
-						IsFriend: s.qq.FindFriend(n.SenderId) != nil,
-					},
-					Time:     n.Time,
-					Elements: n.Message,
-				}
-				s.handleQQMessage(c, grpMsgT, false)
-			}
+			s.handleForwardMsg(c, f)
+		case *message.ForwardMessage:
+			s.handleForwardMsg(c, i)
 		case *message.ShortVideoElement:
 			go func() {
 				defer func() {
@@ -183,6 +193,22 @@ func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessag
 	}
 }
 
+func (s *Service) handleForwardMsg(c *discordgo.Channel, f *message.ForwardMessage) {
+	for _, n := range f.Nodes {
+		grpMsgT := &message.GroupMessage{
+			GroupCode: n.GroupId,
+			Sender: &message.Sender{
+				Uin:      n.SenderId,
+				Nickname: "[forward] " + n.SenderName,
+				IsFriend: s.qq.FindFriend(n.SenderId) != nil,
+			},
+			Time:     n.Time,
+			Elements: n.Message,
+		}
+		s.handleQQMessage(c, grpMsgT, false)
+	}
+}
+
 func (s *Service) QQMsgToString(msg *message.GroupMessage, isReply bool) string {
 	elems := msg.Elements
 	groupCode := msg.GroupCode
@@ -201,7 +227,7 @@ func (s *Service) elemToString(elems []message.IMessageElement, groupCode int64,
 		case *message.AtElement:
 			if e.Target == s.qq.Uin {
 				if !isReply {
-					res += "@here" + e.Display
+					res += "@here " + e.Display
 				}
 			} else {
 				res += e.Display

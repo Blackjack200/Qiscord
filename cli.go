@@ -8,12 +8,10 @@ import (
 	"github.com/Blackjack200/Qiscord/backend"
 	"github.com/Blackjack200/Qiscord/util"
 	"github.com/Logiase/MiraiGo-Template/bot"
-	"github.com/bwmarrin/discordgo"
 	"github.com/sirupsen/logrus"
 	"github.com/tuotoo/qrcode"
 	"os"
 	"os/signal"
-	"strings"
 )
 
 func main() {
@@ -51,23 +49,8 @@ func main() {
 		log.Fatalf("new service: %v", err)
 	}
 	//frontend
-	started := false
-	s.Discord().AddHandler(func(discord *discordgo.Session, discordMsg *discordgo.MessageCreate) {
-		if started {
-			return
-		}
-		guildID := discordMsg.GuildID
-		channelID := discordMsg.ChannelID
-		if strings.EqualFold(discordMsg.Content, "clear") {
-			util.Must(s.DeleteALlChannel(guildID))
-			util.Must(discord.ChannelMessageSend(channelID, "ok"))
-		}
 
-		if strings.EqualFold(discordMsg.Content, "ping") {
-			util.Must(s.Start(guildID))
-			util.Must(discord.ChannelMessageSend(channelID, "ok"))
-		}
-	})
+	util.Must(s.Start("1047674480677371964"))
 
 	wait()
 	util.Must(s.Stop())
