@@ -93,11 +93,15 @@ func (s MessageHistory) lazy(guildId string, channelId string) {
 
 func (s MessageHistory) Insert(guildId, channelId, discordMsgId string, qqMsgId int32) {
 	s.lazy(guildId, channelId)
+	mu.Lock()
+	defer mu.Unlock()
 	s[guildId][channelId].Insert(discordMsgId, qqMsgId)
 }
 
 func (s MessageHistory) LastId(guildId, channelId string) (int64, bool) {
 	s.lazy(guildId, channelId)
+	mu.Lock()
+	defer mu.Unlock()
 	id := s[guildId][channelId].LastId
 	return id, id != 0
 }
