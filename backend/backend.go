@@ -2,6 +2,7 @@ package backend
 
 import (
 	"github.com/sirupsen/logrus"
+	"sync/atomic"
 )
 import (
 	"fmt"
@@ -22,10 +23,11 @@ type Service struct {
 	history         storage.MessageHistory
 	saveHistoryFunc func() error
 
-	initTransportOnce bool
-	qqToDiscordMap    map[int64]*discordgo.Channel
-	discordToQQMap    map[string]int64
-	registerFunc      func(groupCode int64, groupName string) error
+	lastDiscordMessage *atomic.Int32
+	initTransportOnce  bool
+	qqToDiscordMap     map[int64]*discordgo.Channel
+	discordToQQMap     map[string]int64
+	registerFunc       func(groupCode int64, groupName string) error
 }
 
 func NewService(log *logrus.Logger, data *ServiceData) (*Service, error) {
@@ -34,11 +36,12 @@ func NewService(log *logrus.Logger, data *ServiceData) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		log:             log,
-		discord:         discord,
-		qq:              qq,
-		history:         history,
-		saveHistoryFunc: saveHistoryFunc,
+		log:                log,
+		discord:            discord,
+		qq:                 qq,
+		lastDiscordMessage: &atomic.Int32{},
+		history:            history,
+		saveHistoryFunc:    saveHistoryFunc,
 	}, nil
 }
 

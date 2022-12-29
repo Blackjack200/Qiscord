@@ -24,8 +24,12 @@ func (s *Service) startMessageHandler() {
 	})
 	groupMsgHandler := func(_ *client.QQClient, qqMsg *message.GroupMessage) {
 		util.Must(s.registerFunc(qqMsg.GroupCode, qqMsg.GroupName))
-		if channel, ok := s.groupToChannel(qqMsg.GroupCode); ok {
-			s.handleQQMessage(channel, qqMsg, true)
+		if old := s.lastDiscordMessage.Swap(0); old != qqMsg.Id && old != 0 {
+			if channel, ok := s.groupToChannel(qqMsg.GroupCode); ok {
+				s.handleQQMessage(channel, qqMsg, true)
+			}
+		} else {
+			s.lastDiscordMessage.Store(old)
 		}
 	}
 	s.qq.SelfGroupMessageEvent.Subscribe(groupMsgHandler)

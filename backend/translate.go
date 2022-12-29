@@ -76,20 +76,12 @@ func (s *Service) HandleDiscordMessage(group *client.GroupInfo, discordMsg *disc
 	}
 	grpMsg := s.qq.SendGroupMessage(group.Code, translated)
 	s.history.Insert(discordMsg.GuildID, discordMsg.ChannelID, discordMsg.ID, grpMsg.Id)
+	s.lastDiscordMessage.Store(grpMsg.Id)
 }
 
 func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessage, history bool) {
 	defer func() {
-		panicThing := recover()
-		if panicThing != nil {
-			s.log.Errorf("panic: translate qq msg: %v", panicThing)
-			// another panic possibility lol
-			util.Must(s.qq.SendGroupMessage(msg.GroupCode,
-				message.NewSendingMessage().Append(message.NewText(
-					fmt.Sprintf("panic: translate %v msg: %v", s, panicThing),
-				))),
-			)
-		}
+
 	}()
 	m := &discordgo.MessageSend{}
 	isReply := false
@@ -132,11 +124,9 @@ func (s *Service) handleQQMessage(c *discordgo.Channel, msg *message.GroupMessag
 		done:
 			continue
 		case *message.FriendImageElement:
-			println(i.Url)
 			elem, err := s.qq.QueryFriendImage(msg.Sender.Uin, i.Md5, i.Size)
 			util.Must(err)
 			url := elem.Url
-			println(elem.Url)
 			m.Embeds = append(m.Embeds, &discordgo.MessageEmbed{
 				Image: &discordgo.MessageEmbedImage{
 					URL:      url,
